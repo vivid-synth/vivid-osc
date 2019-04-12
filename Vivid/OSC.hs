@@ -2,15 +2,17 @@
 
 {-# OPTIONS_HADDOCK show-extensions #-}
 
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE
+     LambdaCase
+   , OverloadedStrings
+   , ViewPatterns
+   , ScopedTypeVariables
 
-{-# LANGUAGE NoRebindableSyntax #-}
-{-# LANGUAGE NoIncoherentInstances #-}
-{-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE NoUndecidableInstances #-}
+   , NoRebindableSyntax
+   , NoIncoherentInstances
+   , NoMonomorphismRestriction
+   , NoUndecidableInstances
+   #-}
 
 module Vivid.OSC (
      OSC(..)
@@ -27,7 +29,10 @@ module Vivid.OSC (
 
    , encodeTimestamp
    , utcToTimestamp
-   -- , timestampToUTC
+   , timestampToUTC
+   , timestampFromUTC
+   , timestampToPOSIX
+   , timestampFromPOSIX
 
    , addSecs
    , diffTimestamps
@@ -53,21 +58,27 @@ module Vivid.OSC (
    , runGetWithNoLeftover
 
    -- Only need for testing old<->new
-   , toTypeChar
    , alignTo4'
    ) where
+
+-- For GHC 7.8 and older
+-- (Eventually remove):
+import Control.Applicative
 
 -- import Control.DeepSeq (NFData, rnf)
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8 (unpack)
+import Data.Fixed
 import Data.Int (Int32)
 import Data.Monoid
 import Data.Serialize hiding (encode, decode, runGet)
 -- import Data.Serialize.IEEE754
 import qualified Data.Serialize.Get as Get
-import Data.Time (UTCTime(..), fromGregorian, secondsToDiffTime, diffUTCTime)
+import Data.Time (UTCTime(..), fromGregorian, secondsToDiffTime, diffUTCTime, addUTCTime)
+import Data.Time.Clock.POSIX
+import Data.Word
 
 -- | An OSC message, e.g.
 -- 
@@ -92,7 +103,7 @@ data OSCDatum
 
 -- | This is stored as the number of seconds since Jan 1 1900. You can get
 --   it with 'Vivid.Actions.Class.getTime'
-newtype Timestamp = Timestamp Double
+data Timestamp = Timestamp Double -- Pico --  Word32 Word32 -- Double
    deriving (Show, Read, Eq, Ord)
 
 -- | TODO: a Bundle can also contain other bundles, recursively
@@ -230,22 +241,48 @@ encodeTimestamp :: Timestamp -> ByteString
 encodeTimestamp t = runPut (putOSCTimestamp t)
 
 putOSCTimestamp :: Timestamp -> Put
-putOSCTimestamp (Timestamp t) =
+putOSCTimestamp (Timestamp {- secs secFraction -} t) = do
+   -- putWord32be secs
+   -- putWord32be secFraction
    putWord64be $ round $ t * 2^(32::Int)
 
 getOSCTimestamp :: Get Timestamp
 getOSCTimestamp = do
    w <- {- realToFrac -} fromIntegral <$> getWord64be
    pure $ Timestamp $ w / 2 ** 32 -- (2^(32::Int))
+   -- secs <- getWord32be
+   -- secFraction <- getWord32be
+   -- pure $ Timestamp secs secFraction
 
+{-# DEPRECATED utcToTimestamp "renamed to 'timestampFromUTC'" #-}
 utcToTimestamp :: UTCTime -> Timestamp
-utcToTimestamp utcTime =
-   let startOfTheCentury =
-          UTCTime (fromGregorian 1900 1 1) (secondsToDiffTime 0)
-   in Timestamp . realToFrac $ diffUTCTime utcTime startOfTheCentury
+utcToTimestamp utcTime = timestampFromUTC utcTime
 
-_timestampToUTC :: Timestamp -> UTCTime
-_timestampToUTC = undefined
+-- TODO: I'd like to do these 4 functions in terms of POSIX instead of UTCTime:
+
+timestampToUTC :: Timestamp -> UTCTime
+timestampToUTC (Timestamp ts) =
+   -- posixSecondsToUTCTime . timestampToPOSIX
+   addUTCTime (realToFrac ts) startOfTheCentury
+
+timestampFromUTC :: UTCTime -> Timestamp
+timestampFromUTC utcTime =
+   -- timestampFromPOSIX . utcTimeToPOSIXSeconds
+   Timestamp . realToFrac $ diffUTCTime utcTime startOfTheCentury
+
+startOfTheCentury :: UTCTime
+startOfTheCentury =
+   UTCTime (fromGregorian 1900 1 1) (secondsToDiffTime 0)
+
+timestampToPOSIX :: Timestamp -> POSIXTime
+timestampToPOSIX =
+   utcTimeToPOSIXSeconds . timestampToUTC
+
+timestampFromPOSIX :: POSIXTime -> Timestamp
+timestampFromPOSIX =
+   timestampFromUTC . posixSecondsToUTCTime
+
+
 
 addSecs :: Timestamp -> Double -> Timestamp
 addSecs (Timestamp t) secs = Timestamp (t + secs)

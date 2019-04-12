@@ -1,40 +1,31 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE
+     BinaryLiterals
+   , LambdaCase
+   , OverloadedStrings
+   , ViewPatterns
+   #-}
 
+import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
+import Data.Ratio
 import Data.Serialize hiding (runGet)
 -- import Data.Serialize.Get hiding (runGet)
 -- import qualified Data.Serialize.Get as Get
 -- import Data.Serialize.Put
 import Data.Time
+import Data.Time.Clock.POSIX
 import Data.Word
 
 import Test.Microspec
 
 import Vivid.OSC
-import Vivid.OSC.Old.Util
-import qualified Vivid.OSC.Old as Old
 
 main :: IO ()
 main = microspec $ do
-   describe ".utils" $ do
-      describe "float->word->float" $ \f ->
-         wordToFloat (floatToWord f) === f
-      describe "word->float->word" $ \w ->
-         floatToWord (wordToFloat w) === w
-      describe "double->word->double" $ \d ->
-         wordToDouble (doubleToWord d) === d
-      describe "word->Double->word" $ \w ->
-         doubleToWord (wordToDouble w) === w
-      describe "align == align'" $ \i ->
-         alignTo4' (i :: Int) === align i
    describe "OSC types" $ do
       describe "OSC Datum" $ do
-         it "newPutOSCdatum == oldPutOSCdatum" $ do
-            \d -> BSL.toStrict (Old.encodeOSCDatum d) == encodeOSCDatum d
          {-
           - Problem is we don't have type tag; not high priority because
           - we test it in 'getOSC/putOSC' etc:
@@ -43,38 +34,19 @@ main = microspec $ do
             in datumEq newD oldD
             -}
 
-         it "timestamps: old encode . decode" $
-            \(Positive t) ->
-                  let ts = Timestamp t
-                      encoded = BSL.toStrict $ Old.encodeOSCDatum $ OSC_T ts
-                      Right (OSC_T t') = Old.decodeOSCDatumWithPadding 't' encoded
-                  in ts `timestampEq` t'
-
          describe "examples from the OSC 1.0 spec" $ do
-            it "example 1" $ do
-               Old.encodeOSCDatum (OSC_S "OSC")
-                  === BSL.pack (map (toEnum . fromEnum) ['O','S','C', '\NUL'])
             it "example 1, new" $ do
                encodeOSCDatum (OSC_S "OSC")
                   === BS.pack (map (toEnum . fromEnum) ['O','S','C', '\NUL'])
-            it "example 2" $ do
-               Old.encodeOSCDatum (OSC_S "data")
-                  === BSL.pack (map (toEnum . fromEnum) ("data"++replicate 4 '\NUL'))
             it "example 2, new" $ do
                encodeOSCDatum (OSC_S "data")
                    === BS.pack (map (toEnum . fromEnum) ("data"++replicate 4 '\NUL'))
 
 
       describe "the OSC type" $ do
-         it "olddecode . oldencode" $ \(OSC a bs) ->
-            -- My old decoding of timestamps was fucked up!:
-            let oldO = OSC a $ filter (\case { OSC_T _ -> False ; _ -> True }) bs
-            in Old.decodeOSC (Old.encodeOSC oldO) === Right oldO
-         it "new encode == old encode" $ \o ->
-            encodeOSC o === Old.encodeOSC o
          it "decode . encode" $ \o ->
             let Right new = decodeOSC (encodeOSC o)
-            in oscEq new o
+            in new `oscEq` o
          describe "examples from the OSC 1.0 spec" $ do
             it "example 1" $
                encodeOSC (OSC "/oscillator/4/frequency" [OSC_F 440.0])
@@ -104,36 +76,30 @@ main = microspec $ do
                       ]
                in encodeOSC cmd === out
       describe "OSCBundle" $ do
-         it "newDecode . newEncode" $ \t xs ->
+         it "decode . encode" $ \t xs ->
             let oldB = OSCBundle t (map Right xs)
                 Right newB = decodeOSCBundle (encodeOSCBundle oldB)
-            in bundleEq newB oldB
-         it "oldEncode === newEncode" $ \b ->
-            Old.encodeOSCBundle b === encodeOSCBundle b
+            in newB `bundleEq` oldB
    describe "bijections" $ do
       it "getOSC . putOSC" $ \origOSC ->
          let Right newOSC = decodeOSC (encodeOSC origOSC)
-         in oscEq newOSC origOSC
-      it "putOSCString vs old" $ \(NonNullBS s) ->
-         runPut (putOSCString s) === BSL.toStrict (Old.encodeOSCDatum (OSC_S s))
+         in newOSC `oscEq` origOSC
       describe "getString . putString" $ \(NonNullBS s) ->
          runGet getOSCString (runPut (putOSCString s)) === Right s
       it "decodetimestamp . encodetimestamp" $ \t ->
-         fromRight (runGet getOSCTimestamp (runPut (putOSCTimestamp t))) `timestampEq` t
-      it "oldencode timestamp == new encode" $ \t ->
-         runPut (putOSCTimestamp t) === Old.encodeTimestamp t
+         fromRight (runGet getOSCTimestamp (runPut (putOSCTimestamp t)))
+            `timestampEq` t
       it "encodeOSC isRight (with the valid input we generate)" pending
       describe "binary blobs" $ do
          it "decode . encode" $ \(BS.pack -> b) ->
             runGet getOSCBlob (runPut (putOSCBlob b)) === Right b
-      describe "decodeOSCdatumswithpadding == getOSCDatum" pending
+      describe "decodeOSCdatumswithpadding -== getOSCDatum" pending
    describe "unit tests - a few examples for each function" $ do
       describe "putOSCDatum" $ do
          describe "OSC_S" $ do
             it "pads an extra 4 when it's already a multiple of 4" $
                encodeOSCDatum (OSC_S "four") === "four\NUL\NUL\NUL\NUL"
       describe "do this for every function" pending
-      describe "more manual test cases" pending
 -- binary up to the mazimum size
 -- very large and very small floats
 -- NaNs and (+/-)Infinity (floats and doubles)
@@ -143,10 +109,63 @@ main = microspec $ do
 
 
    describe "timestamp" $ do
-      it "timestamp->utc" $ pending -- \t ->
-         -- utcToTimestamp (timestampToUTC t) === t
-      it "utc->timestamp" $ pending -- \u ->
-         -- timestampToUTC (utcToTimestamp u) === u
+      it "timestamp->utc" $ \t ->
+         utcToTimestamp (timestampToUTC t) `timestampEq` t
+      it "utc->timestamp" $ \u ->
+         timestampToUTC (utcToTimestamp u) `utcEq` u
+      it "timestamp->POSIX" $ \t ->
+         timestampFromPOSIX (timestampToPOSIX t) `timestampEq` t
+      it "POSIX->timestamp" $ \u ->
+         timestampToPOSIX (timestampFromPOSIX u) `posixEq` u
+
+
+      -- Examples from https://www.eecis.udel.edu/~mills/y2k.html:
+      -- (Also in RFC 5905)
+      describe "examples from the NTP time author" $ do
+         let f :: Day -> Double -> Bool
+             f day ts = (timestampFromUTC (UTCTime day 0)) -- can test: 0.00001
+                `timestampEq` Timestamp ts
+         it "first day NTP" $
+            f (fromGregorian 1900 01 01) 0
+         it "first day UNIX" $
+            f (fromGregorian 1970 01 01) 2208988800
+         it "first day UTC" $
+            f (fromGregorian 1972 01 01) 2272060800
+         it "last day 20th century" $
+            f (fromGregorian 1999 12 31) 3155587200
+         it "last day NTP era 0" $
+            f (fromGregorian 2036 02 07) 4294944000
+
+      -- From ntp.org:
+      describe "hex and binary representation" $ do
+         let dateWereEncoding :: UTCTime
+             dateWereEncoding = read "2000-08-31 18:52:30.735861"
+         it "represents a hex date properly" $
+            Right (timestampFromUTC dateWereEncoding)
+               === runGet getOSCTimestamp
+               (BS.pack [
+                    -- Top 32 bits:
+                    0xbd,0x59,0x27,0xee
+                    -- Bottom 32:
+                  , 0xbc,0x61,0x60,0x00
+                  ])
+         -- Of course these should be the same, but pick your poison:
+         it "represents a binary date properly" $
+            Right (timestampFromUTC dateWereEncoding)
+               === runGet getOSCTimestamp
+                  (BS.pack [
+                      -- Top 32:
+                      0b10111101,0b01011001,0b00100111,0b11101110
+                      -- Bottom 32:
+                    , 0b10111100,0b01100001,0b01100000,0b00000000
+                    ])
+
+
+-- TODO:
+           -- also this equals, in unix (useful for when i have conversion functions):
+           -- 0x39aea96e 0x000b3a75
+           -- == 0b00111001101011101010100101101110
+           --    0b00000000000010110011101001110101
 
 fromRight :: Show e => Either e x -> x
 fromRight = \case
@@ -178,6 +197,7 @@ instance Arbitrary NonNullBS where
 instance Arbitrary Timestamp where
     -- Note cannot be negative:
    arbitrary = (Timestamp . getNonNegative) <$> arbitrary
+      -- Timestamp <$> arbitrary <*> arbitrary
 
 instance Arbitrary OSC where
    arbitrary = OSC
@@ -193,14 +213,47 @@ instance Arbitrary OSCBundle where
            Right <$> arbitrary -- type inference is nice!
          ])
 
-instance Arbitrary UTCTime where
-   arbitrary = undefined
+-- UTC Arbitrary instance taken from the test suite for the 'time' package:
+instance Arbitrary Day where
+    arbitrary = liftM ModifiedJulianDay $
+       -- From the 'time' package:
+       -- choose (-313698, 2973483) -- 1000-01-1 to 9999-12-31
+       choose (14802, 233802) -- (900*365)+1000-01-1 to (1500*365)+1000-01-1
 
--- TODO: do we need this? is there a way to encode timestamps non-lossily?:
--- I would also love to get rid of this whole thing:
+instance Arbitrary DiffTime where
+    arbitrary = oneof [intSecs, fracSecs] -- up to 1 leap second
+        where intSecs = liftM secondsToDiffTime' $ choose (0, 86400)
+              fracSecs = liftM picosecondsToDiffTime' $ choose (0, 86400 * 10^12)
+              secondsToDiffTime' :: Integer -> DiffTime
+              secondsToDiffTime' = fromInteger
+              picosecondsToDiffTime' :: Integer -> DiffTime
+              picosecondsToDiffTime' x = fromRational (x % 10^12)
+
+instance Arbitrary UTCTime where
+    arbitrary = liftM2 UTCTime arbitrary arbitrary
+
+-- POSIXTime is an alias for NominalDiffTime:
+instance Arbitrary NominalDiffTime where
+   arbitrary = utcTimeToPOSIXSeconds <$> arbitrary
+
+
+
+runGet :: Get a -> ByteString -> Either String a
+runGet = runGetWithNoLeftover
+
+
+
+
+
+
+
+
+
+
+-- TODO: I would LOVE to get rid of this whole thing:
 timestampEq :: Timestamp -> Timestamp -> Bool
 timestampEq (Timestamp time0) (Timestamp time1) =
-   abs (time0 - time1) < 0.0000001
+   abs (time0 - time1) < 0.000000001
 
 datumEq :: OSCDatum -> OSCDatum -> Bool
 datumEq a b = case (a, b) of
@@ -236,10 +289,12 @@ bundleEq (OSCBundle t0 msgs0) (OSCBundle t1 msgs1) =
       rightMatchesLeft l r
    msgsMatch (Right r:rest0) (Left l:rest1) =
       rightMatchesLeft l r
-
--- This is not ideal, using the encoding functions to test them
-rightMatchesLeft :: Left ByteString -> Right OSC -> Bool
 -}
-runGet :: Get a -> ByteString -> Either String a
-runGet = runGetWithNoLeftover
 
+utcEq :: UTCTime -> UTCTime -> Bool
+utcEq a b =
+   abs (diffUTCTime a b) < 0.00001
+
+posixEq :: POSIXTime -> POSIXTime -> Bool
+posixEq a b =
+   abs (a - b) < 0.00001
